@@ -277,7 +277,8 @@ class ThoonkListener(threading.Thread):
         self.handlers = {}
         self.thoonk = thoonk
         self.ready = threading.Event()
-        self.redis = redis.StrictRedis(host=thoonk.host, port=thoonk.port, db=thoonk.db)
+        self.redis = redis.StrictRedis(host=thoonk.host, port=thoonk.port, 
+            db=thoonk.db)
         self.finished = threading.Event()
         self.instance = thoonk.instance
         self._finish_channel = "listenerclose_%s" % self.instance
@@ -286,6 +287,10 @@ class ThoonkListener(threading.Thread):
         
     def finish(self):
         self.redis.publish(self._finish_channel, "")
+
+    def _channels_for_feed(self, name):
+        return ("feed.publish:"+name, "feed.edit:"+name, "feed.retract:"+name, 
+            "feed.position:"+name, "job.finish:"+name)
     
     def run(self):
         """
@@ -300,11 +305,13 @@ class ThoonkListener(threading.Thread):
         # listener redis object
         self._pubsub = self.redis.pubsub()
         # subscribe to feed activities channel
-        self._pubsub.subscribe((self._finish_channel, 'newfeed', 'delfeed', 'conffeed'))
-
+        self._pubsub.subscribe((self._finish_channel, 'newfeed', 'delfeed', 
+            'conffeed'))
+        
+        
         # subscribe to exist feeds retract and publish
         for feed in self.redis.smembers("feeds"):
-            self._pubsub.subscribe(self.thoonk._feeds[feed].get_channels())
+            self._pubsub.subscribe(self._channels_for_feed(feed))
 
         self.ready.set()
         for event in self._pubsub.listen():
@@ -323,8 +330,7 @@ class ThoonkListener(threading.Thread):
         if channel == 'newfeed':
             #feed created event
             name, _ = data.split('\x00')
-            self._pubsub.subscribe(("feed.publish:"+name, "feed.edit:"+name,
-                "feed.retract:"+name, "feed.position:"+name, "job.finish:"+name))
+            self._pubsub.subscribe(self._channels_for_feed(name))
             self.emit("create", name)
         
         elif channel == 'delfeed':
