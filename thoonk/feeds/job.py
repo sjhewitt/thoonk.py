@@ -151,15 +151,7 @@ class Job(Queue):
         pipe.incr(self.feed_publishes)
         pipe.hset(self.feed_items, id, item)
         pipe.zadd(self.feed_published, **{id: int(time.time()*1000)})
-
-        results = pipe.execute()
-
-        if results[-1]:
-            # If zadd was successful
-            self.thoonk._publish(self.feed_publishes, (id, item))
-        else:
-            self.thoonk._publish(self.feed_edit, (id, item))
-
+        pipe.execute()
         return id
 
     def get(self, timeout=0):
@@ -175,7 +167,6 @@ class Job(Queue):
         Returns:
             id      -- The id of the job
             job     -- The job content
-            cancelled -- The number of times the job has been cancelled
         """
         id = self.redis.brpop(self.feed_ids, timeout)
         if id is None:
@@ -185,12 +176,9 @@ class Job(Queue):
         pipe = self.redis.pipeline()
         pipe.zadd(self.feed_claimed, **{id: int(time.time()*1000)})
         pipe.hget(self.feed_items, id)
-        pipe.hget(self.feed_cancelled, id)
         result = pipe.execute()
         
-        self.thoonk._publish(self.feed_claimed, (id,))
-
-        return id, result[1], 0 if result[2] is None else int(result[2])
+        return id, result[1]
 
     def get_failure_count(self, id):
         return int(self.redis.hget(self.feed_cancelled, id) or 0)
