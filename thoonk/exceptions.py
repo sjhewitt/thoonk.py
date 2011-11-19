@@ -10,6 +10,15 @@ class FeedExists(Exception):
 class FeedDoesNotExist(Exception):
     pass
 
+class ItemDoesNotExist(Exception):
+    pass
+
+class JobNotClaimed(Exception):
+    pass
+
+class JobNotStalled(Exception):
+    pass
+
 class Empty(Exception):
     pass
 

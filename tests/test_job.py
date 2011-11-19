@@ -30,9 +30,9 @@ class TestJob(unittest.TestCase):
         id = testjob.put('9.0')
         
         #worker
-        id_worker, job_content, cancelled = testjob.get(timeout=3)
+        id_worker, job_content = testjob.get(timeout=3)
         self.assertEqual(job_content, '9.0')
-        self.assertEqual(cancelled, 0)
+        self.assertEqual(testjob.get_failure_count(id), 0)
         self.assertEqual(id_worker, id)
         testjob.finish(id_worker)
         
@@ -44,26 +44,82 @@ class TestJob(unittest.TestCase):
         #publisher
         id = j.put('9.0')
         #worker claims
-        id, job_content, cancelled = j.get()
+        id, job_content = j.get()
         self.assertEqual(job_content, '9.0')
-        self.assertEqual(cancelled, 0)
+        self.assertEqual(j.get_failure_count(id), 0)
         #publisher or worker cancels
         j.cancel(id)
-        id2, job_content2, cancelled2 = j.get()
-        self.assertEqual(cancelled2, 1)
+        id2, job_content2 = j.get()
+        self.assertEqual(j.get_failure_count(id), 1)
         self.assertEqual(job_content2, '9.0')
         self.assertEqual(id, id2)
         #cancel the work again
         j.cancel(id)
         # check the cancelled increment again
-        id3, job_content3, cancelled3 = j.get()
-        self.assertEqual(cancelled3, 2)
+        id3, job_content3 = j.get()
+        self.assertEqual(j.get_failure_count(id), 2)
         self.assertEqual(job_content3, '9.0')
         self.assertEqual(id, id3)
         #cleanup -- remove the job from the queue
         j.retract(id)
         self.assertEqual(j.get_ids(), [])
 
+    def test_25_stall_job(self):
+        """Test stalling a job"""
+        testjob = self.ps.job("testjob")
+        self.assertEqual(testjob.get_ids(), [])
+        
+        # put
+        id = testjob.put('9.0')
+        self.assertEqual(testjob.get_ids(), [id])
+        
+        # invalid stall
+        self.assertRaises(thoonk.exceptions.JobNotClaimed, testjob.stall, id)
+        
+        # get
+        id_worker, job_content = testjob.get(timeout=3)
+        self.assertEqual(id_worker, id)
+        self.assertEqual(job_content, '9.0')
+        self.assertEqual(testjob.get_failure_count(id), 0)
+
+        # invalid retry
+        self.assertRaises(thoonk.exceptions.JobNotStalled, testjob.retry, id)
+        
+        # stall
+        testjob.stall(id)
+        self.assertEqual(testjob.get_ids(), [id])
+        self.assertRaises(thoonk.exceptions.Empty, testjob.get, timeout=1)
+        
+        # retry
+        testjob.retry(id)
+        self.assertEqual(testjob.get_ids(), [id])
+        
+        # get
+        id_worker, job_content = testjob.get(timeout=3)
+        self.assertEqual(id_worker, id)
+        self.assertEqual(job_content, '9.0')
+        self.assertEqual(testjob.get_failure_count(id), 0)
+        
+        # finish
+        testjob.finish(id_worker)
+        self.assertEqual(testjob.get_ids(), [])
+    
+    def test_27_retract_job(self):
+        """Test retracting a job"""
+        testjob = self.ps.job("testjob")
+        self.assertEqual(testjob.get_ids(), [])
+        
+        # put
+        id = testjob.put('9.0')
+        self.assertEqual(testjob.get_ids(), [id])
+        
+        # retract
+        testjob.retract(id)
+        self.assertEqual(testjob.get_ids(), [])
+        
+        # invalid retract
+        self.assertRaises(thoonk.exceptions.ItemDoesNotExist, testjob.retract, id)
+    
     def test_30_no_job(self):
         """Test exception raise when job.get times out"""
         j = self.ps.job("testjob")
@@ -107,9 +163,9 @@ class TestJobResult(unittest.TestCase):
         id = testjob.put('9.0')
         
         #worker
-        id_worker, job_content, cancelled = testjob.get(timeout=3)
+        id_worker, job_content = testjob.get(timeout=3)
         self.assertEqual(job_content, '9.0')
-        self.assertEqual(cancelled, 0)
+        self.assertEqual(testjob.get_failure_count(id), 0)
         self.assertEqual(id_worker, id)
         
         result_event = threading.Event()

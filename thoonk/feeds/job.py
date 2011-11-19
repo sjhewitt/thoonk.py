@@ -7,7 +7,8 @@ import time
 import uuid
 
 from thoonk.feeds import Queue
-from thoonk.feeds.queue import Empty
+from thoonk.exceptions import Empty, JobNotClaimed, JobNotStalled,\
+    ItemDoesNotExist
 
 class Job(Queue):
 
@@ -81,7 +82,7 @@ class Job(Queue):
             config -- Optional dictionary of configuration values.
         """
         Queue.__init__(self, thoonk, feed)
-
+        
         self.feed_publishes = 'feed.publishes:%s' % feed
         self.feed_published = 'feed.published:%s' % feed
         self.feed_cancelled = 'feed.cancelled:%s' % feed
@@ -117,17 +118,9 @@ class Job(Queue):
         Arguments:
             id -- The ID of the job to remove.
         """
-        def _retract(pipe):
-            if pipe.hexists(self.feed_items, id):
-                pipe.multi()
-                pipe.hdel(self.feed_items, id)
-                pipe.hdel(self.feed_cancelled, id)
-                pipe.zrem(self.feed_published, id)
-                pipe.srem(self.feed_stalled, id)
-                pipe.zrem(self.feed_claimed, id)
-                pipe.lrem(self.feed_ids, 1, id)
-        
-        self.redis.transaction(_retract, self.feed_items)
+        success = self.redis.evalsha(self.thoonk.scripts["jobs/retract"], 0, self.feed, id)
+        if not success:
+            raise ItemDoesNotExist
 
     def put(self, item, priority=False):
         """
@@ -142,24 +135,13 @@ class Job(Queue):
                         queue instead of the end.
         """
         id = uuid.uuid4().hex
-        pipe = self.redis.pipeline()
-
-        if priority:
-            pipe.rpush(self.feed_ids, id)
-        else:
-            pipe.lpush(self.feed_ids, id)
-        pipe.incr(self.feed_publishes)
-        pipe.hset(self.feed_items, id, item)
-        pipe.zadd(self.feed_published, **{id: int(time.time()*1000)})
-
-        results = pipe.execute()
-
-        if results[-1]:
+        added = self.redis.evalsha(self.thoonk.scripts["jobs/publish"], 0,
+            self.feed, id, item, int(time.time()*1000), 1 if priority else None)
+        if added:
             # If zadd was successful
             self.thoonk._publish(self.feed_publishes, (id, item))
         else:
             self.thoonk._publish(self.feed_edit, (id, item))
-
         return id
 
     def get(self, timeout=0):
@@ -175,22 +157,14 @@ class Job(Queue):
         Returns:
             id      -- The id of the job
             job     -- The job content
-            cancelled -- The number of times the job has been cancelled
         """
         id = self.redis.brpop(self.feed_ids, timeout)
         if id is None:
             raise Empty
         id = id[1]
-
-        pipe = self.redis.pipeline()
-        pipe.zadd(self.feed_claimed, **{id: int(time.time()*1000)})
-        pipe.hget(self.feed_items, id)
-        pipe.hget(self.feed_cancelled, id)
-        result = pipe.execute()
-        
-        self.thoonk._publish(self.feed_claimed, (id,))
-
-        return id, result[1], 0 if result[2] is None else int(result[2])
+        result = self.redis.evalsha(self.thoonk.scripts["jobs/get"], 0, self.feed, id, 
+            int(time.time()*1000))
+        return id, result[1]
 
     def get_failure_count(self, id):
         return int(self.redis.hget(self.feed_cancelled, id) or 0)
@@ -204,19 +178,10 @@ class Job(Queue):
             id      -- The ID of the completed job.
             result  -- The result data from the job. (should be a string!)
         """
-        def _finish(pipe):
-            if pipe.zrank(self.feed_claimed, id) is None:
-                return # raise exception?
-            pipe.multi()
-            pipe.zrem(self.feed_claimed, id)
-            pipe.hdel(self.feed_cancelled, id)
-            pipe.zrem(self.feed_published, id)
-            pipe.incr(self.feed_finishes)
-            if result is not self.NO_RESULT:
-                self.thoonk._publish(self.job_finish, (id, result), pipe)
-            pipe.hdel(self.feed_items, id)
-        
-        self.redis.transaction(_finish, self.feed_claimed)
+        success = self.redis.evalsha(self.thoonk.scripts["jobs/finish"], 0, self.feed, id, 
+            *([result] if result is not self.NO_RESULT else []))
+        if not success:
+            raise JobNotClaimed
 
     def cancel(self, id):
         """
@@ -225,15 +190,9 @@ class Job(Queue):
         Arguments:
             id -- The ID of the job to cancel.
         """
-        def _cancel(pipe):
-            if self.redis.zrank(self.feed_claimed, id) is None:
-                return # raise exception?
-            pipe.multi()
-            pipe.hincrby(self.feed_cancelled, id, 1)
-            pipe.lpush(self.feed_ids, id)
-            pipe.zrem(self.feed_claimed, id)
-        
-        self.redis.transaction(_cancel, self.feed_claimed)
+        success = self.redis.evalsha(self.thoonk.scripts["jobs/cancel"], 0, self.feed, id)
+        if not success:
+            raise JobNotClaimed
 
     def stall(self, id):
         """
@@ -244,16 +203,9 @@ class Job(Queue):
         Arguments:
             id -- The ID of the job to pause.
         """
-        def _stall(pipe):
-            if pipe.zrank(self.feed_claimed, id) is None:
-                return # raise exception?
-            pipe.multi()
-            pipe.zrem(self.feed_claimed, id)
-            pipe.hdel(self.feed_cancelled, id)
-            pipe.sadd(self.feed_stalled, id)
-            pipe.zrem(self.feed_published, id)
-        
-        self.redis.transaction(_stall, self.feed_claimed)
+        success = self.redis.evalsha(self.thoonk.scripts["jobs/stall"], 0, self.feed, id)
+        if not success:
+            raise JobNotClaimed
 
     def retry(self, id):
         """
@@ -262,17 +214,10 @@ class Job(Queue):
         Arguments:
             id -- The ID of the job to resume.
         """
-        def _retry(pipe):
-            if pipe.sismember(self.feed_stalled, id) is None:
-                return # raise exception?
-            pipe.multi()
-            pipe.srem(self.feed_stalled, id)
-            pipe.lpush(self.feed_ids, id)
-            pipe.zadd(self.feed_published, **{id: time.time()})
-        
-        results = self.redis.transaction(_retry, self.feed_stalled)
-        if not results[0]:
-            return # raise exception?
+        success = self.redis.evalsha(self.thoonk.scripts["jobs/retry"], 0, self.feed, id,
+            int(time.time()*1000))
+        if not success:
+            raise JobNotStalled
 
     def maintenance(self):
         """

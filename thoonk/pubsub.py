@@ -9,6 +9,7 @@ import uuid
 
 from thoonk import feeds, cache
 from thoonk.exceptions import FeedExists, FeedDoesNotExist, NotListening
+import os
 
 class Thoonk(object):
 
@@ -85,7 +86,13 @@ class Thoonk(object):
         self.instance = uuid.uuid4().hex
 
         self.feedtypes = {}
-
+        
+        self.scripts = {}
+        for dirpath, _, filenames in os.walk("scripts/"):
+            for filename in filenames:
+                if filename.endswith(".lua"):
+                    f = open(os.path.join(dirpath, filename), "r")
+                    self.scripts[dirpath[8:]+"/"+filename[:-4]] = self.redis.script("LOAD", f.read())
         self.listening = listen
 
         self.feed_publish = 'feed.publish:%s'
