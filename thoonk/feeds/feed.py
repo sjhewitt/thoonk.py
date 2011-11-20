@@ -5,13 +5,7 @@
 
 import time
 import uuid
-try:
-    import queue
-except ImportError:
-    import Queue as queue
-
-from thoonk.exceptions import *
-import redis.exceptions
+from thoonk.exceptions import ItemDoesNotExist
 
 class Feed(object):
 
@@ -160,32 +154,8 @@ class Feed(object):
         publish_id = id
         if publish_id is None:
             publish_id = uuid.uuid4().hex
-        
-        def _publish(pipe):
-            max = int(pipe.hget(self.feed_config, "max_length") or 0)
-            if max > 0:
-                delete_ids = pipe.zrange(self.feed_ids, 0, -max)
-                pipe.multi()
-                for id in delete_ids:
-                    if id != publish_id:
-                        pipe.zrem(self.feed_ids, id)
-                        pipe.hdel(self.feed_items, id)
-                        self.thoonk._publish(self.feed_retract, (id,), pipe)
-            else:
-                pipe.multi()
-            pipe.zadd(self.feed_ids, **{publish_id: time.time()})
-            pipe.incr(self.feed_publishes)
-            pipe.hset(self.feed_items, publish_id, item)
-        
-        results = self.redis.transaction(_publish, self.feed_ids)
-        
-        if results[-3]:
-            # If zadd was successful
-            self.thoonk._publish(self.feed_publish, (publish_id, item))
-        else:
-            self.thoonk._publish(self.feed_edit, (publish_id, item))
-
-        return publish_id
+        return self.redis.evalsha(self.thoonk.scripts["feed/publish"], 0, 
+            self.feed, publish_id, item, int(time.time()*1000))
 
     def retract(self, id):
         """
@@ -194,11 +164,7 @@ class Feed(object):
         Arguments:
             id -- The ID value of the item to remove.
         """
-        def _retract(pipe):
-            if pipe.zrank(self.feed_ids, id) is not None:
-                pipe.multi()
-                pipe.zrem(self.feed_ids, id)
-                pipe.hdel(self.feed_items, id)
-                self.thoonk._publish(self.feed_retract, (id,), pipe)
-        
-        self.redis.transaction(_retract, self.feed_ids)
+        success = self.redis.evalsha(self.thoonk.scripts["feed/retract"], 0, 
+            self.feed, id)
+        if not success:
+            raise ItemDoesNotExist
