@@ -150,12 +150,15 @@ class Feed(object):
             item -- The content of the item to add to the feed.
             id   -- Optional ID to use for the item, if the ID already
                     exists, the existing item will be replaced.
+        
+        Returns a tuple containing the ID of the item and a flag indicating if 
+        the item was created or edited
         """
-        publish_id = id
-        if publish_id is None:
-            publish_id = uuid.uuid4().hex
-        return self.redis.evalsha(self.thoonk.scripts["feed/publish"], 0, 
-            self.feed, publish_id, item, int(time.time()*1000))
+        if id is None:
+            id = uuid.uuid4().hex
+        created = self.redis.evalsha(self.thoonk.scripts["feed/publish"], 0, 
+            self.feed, id, item, int(time.time()*1000))
+        return id, created
 
     def retract(self, id):
         """
