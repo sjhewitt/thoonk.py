@@ -10,6 +10,7 @@ import uuid
 from thoonk import feeds, cache
 from thoonk.exceptions import FeedExists, FeedDoesNotExist, NotListening
 import os
+import json
 
 class Thoonk(object):
 
@@ -92,7 +93,9 @@ class Thoonk(object):
             for filename in filenames:
                 if filename.endswith(".lua"):
                     f = open(os.path.join(dirpath, filename), "r")
-                    self.scripts[dirpath[8:]+"/"+filename[:-4]] = self.redis.script("LOAD", f.read())
+                    if len(dirpath) > 8:
+                        filename = dirpath[8:]+"/"+filename
+                    self.scripts[filename[:-4]] = self.redis.script("LOAD", f.read())
         self.listening = listen
 
         self.feed_publish = 'feed.publish:%s'
@@ -207,9 +210,12 @@ class Thoonk(object):
             feed   -- The name of the new feed.
             config -- A dictionary of configuration values.
         """
-        if not self.redis.sadd("feeds", feed):
+        if 'type' not in config:
+            config['type'] = 'feed'
+        success = self.redis.evalsha(self.scripts["create"], 0, feed, 
+            json.dumps(config), self.instance)
+        if not success:
             raise FeedExists
-        self.set_config(feed, config, True)
 
     def delete_feed(self, feed):
         """
@@ -218,18 +224,9 @@ class Thoonk(object):
         Arguments:
             feed -- The name of the feed.
         """
-        feed_instance = self._feeds[feed]
-        
-        def _delete_feed(pipe):
-            if not pipe.sismember('feeds', feed):
-                raise FeedDoesNotExist
-            pipe.multi()
-            pipe.srem("feeds", feed)
-            for key in feed_instance.get_schemas():
-                pipe.delete(key)
-            self._publish('delfeed', (feed, self.instance), pipe)
-
-        self.redis.transaction(_delete_feed, 'feeds')
+        success = self.redis.evalsha(self.scripts["delete"], 0, feed, self.instance)
+        if not success:
+            raise FeedDoesNotExist
 
     def set_config(self, feed, config, new_feed=False):
         """
@@ -239,17 +236,10 @@ class Thoonk(object):
             feed   -- The name of the feed.
             config -- A dictionary of configuration values.
         """
-        if not self.feed_exists(feed):
+        success = self.redis.evalsha(self.scripts["config"], 0, feed, 
+            self.instance, json.dumps(config))
+        if not success:
             raise FeedDoesNotExist
-        if u'type' not in config:
-            config[u'type'] = u'feed'
-        pipe = self.redis.pipeline()
-        for k, v in config.iteritems():
-            pipe.hset('feed.config:' + feed, k, v)
-        pipe.execute()
-        if new_feed:
-            self._publish('newfeed', (feed, self.instance))
-        self._publish('conffeed', (feed, self.instance))
 
     def get_feed_names(self):
         """

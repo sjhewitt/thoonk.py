@@ -2,7 +2,6 @@ import thoonk
 from thoonk.feeds import Feed
 import unittest
 from ConfigParser import ConfigParser
-import threading
 
 class TestLeaf(unittest.TestCase):
 
@@ -13,7 +12,7 @@ class TestLeaf(unittest.TestCase):
             self.ps = thoonk.Thoonk(host=conf.get('Test', 'host'),
                                     port=conf.getint('Test', 'port'),
                                     db=conf.getint('Test', 'db'),
-                                    listen=True)
+                                    listen=False)
             self.ps.redis.flushdb()
         else:
             print 'No test configuration found in test.cfg'
